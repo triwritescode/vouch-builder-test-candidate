@@ -1,4 +1,4 @@
-import { kv } from "@vercel/kv";
+import { neon } from "@neondatabase/serverless";
 import type { HandoverReport, VerificationResult } from "../types";
 
 export interface StoredRun {
@@ -7,12 +7,13 @@ export interface StoredRun {
   verification: VerificationResult;
 }
 
-// Swappable run store behind one async interface. Production (Vercel) uses
-// Vercel KV so a run written by the POST instance is readable by the GET/page
-// instance — serverless invocations do not share process memory. Without KV
-// creds (local dev / tests) it falls back to an in-memory Map.
+// Swappable run store behind one ASYNC interface. On Vercel, the POST route, the
+// GET route, and the page each run in a SEPARATE lambda process — they do not
+// share memory (a module singleton or globalThis pin only spans one process), so
+// a run written by POST is invisible to the page → 404. Production therefore uses
+// Postgres (Neon) so any process can read what another wrote. Without DATABASE_URL
+// (local dev / tests) it falls back to an in-memory Map.
 export interface RunStore {
-  readonly persistent: boolean;
   put(run: StoredRun): Promise<void>;
   get(runId: string): Promise<StoredRun | undefined>;
   runIdForIdempotencyKey(key: string): Promise<string | undefined>;
@@ -41,29 +42,66 @@ class InMemoryRunStore implements RunStore {
   }
 }
 
-// Vercel KV (Upstash Redis under the hood). Shared across all serverless
-// instances, so the page render can read what the POST wrote.
-class KvRunStore implements RunStore {
-  readonly persistent = true;
+// Postgres (Neon serverless HTTP driver). Shared across all serverless
+// instances, so the page render can read what the POST wrote. Schema is created
+// lazily once per process; CREATE TABLE IF NOT EXISTS is idempotent.
+class PgRunStore implements RunStore {
+  private sql: ReturnType<typeof neon>;
+  private ready?: Promise<void>;
+
+  constructor(connectionString: string) {
+    this.sql = neon(connectionString);
+  }
+
+  private init(): Promise<void> {
+    if (!this.ready) {
+      this.ready = (async () => {
+        await this
+          .sql`CREATE TABLE IF NOT EXISTS vouch_runs (run_id text PRIMARY KEY, data jsonb NOT NULL)`;
+        await this
+          .sql`CREATE TABLE IF NOT EXISTS vouch_idempotency (idem_key text PRIMARY KEY, run_id text NOT NULL)`;
+      })();
+    }
+    return this.ready;
+  }
 
   async put(run: StoredRun): Promise<void> {
-    await kv.set(`run:${run.runId}`, run);
+    await this.init();
+    await this.sql`
+      INSERT INTO vouch_runs (run_id, data)
+      VALUES (${run.runId}, ${JSON.stringify(run)}::jsonb)
+      ON CONFLICT (run_id) DO UPDATE SET data = EXCLUDED.data`;
   }
+
   async get(runId: string): Promise<StoredRun | undefined> {
-    return (await kv.get<StoredRun>(`run:${runId}`)) ?? undefined;
+    await this.init();
+    const rows = (await this
+      .sql`SELECT data FROM vouch_runs WHERE run_id = ${runId}`) as {
+      data: StoredRun;
+    }[];
+    return rows[0]?.data ?? undefined;
   }
+
   async runIdForIdempotencyKey(key: string): Promise<string | undefined> {
-    return (await kv.get<string>(`idem:${key}`)) ?? undefined;
+    await this.init();
+    const rows = (await this
+      .sql`SELECT run_id FROM vouch_idempotency WHERE idem_key = ${key}`) as {
+      run_id: string;
+    }[];
+    return rows[0]?.run_id ?? undefined;
   }
+
   async mapIdempotencyKey(key: string, runId: string): Promise<void> {
-    await kv.set(`idem:${key}`, runId);
+    await this.init();
+    await this.sql`
+      INSERT INTO vouch_idempotency (idem_key, run_id)
+      VALUES (${key}, ${runId})
+      ON CONFLICT (idem_key) DO UPDATE SET run_id = EXCLUDED.run_id`;
   }
 }
 
-const hasKv = Boolean(
-  process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN,
-);
+const dbUrl = process.env.DATABASE_URL;
 const g = globalThis as typeof globalThis & { __vouchRunStore?: RunStore };
-export const runStore: RunStore = hasKv
-  ? new KvRunStore()
+export const runStore: RunStore = dbUrl
+  ? new PgRunStore(dbUrl)
   : (g.__vouchRunStore ??= new InMemoryRunStore());
