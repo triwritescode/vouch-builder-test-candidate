@@ -14,7 +14,7 @@ export async function GET(
   }
 
   const { runId } = await params;
-  const stored = runStore.get(runId);
+  const stored = await runStore.get(runId);
   if (!stored) {
     return NextResponse.json({ error: "run not found" }, { status: 404 });
   }

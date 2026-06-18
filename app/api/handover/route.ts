@@ -35,9 +35,11 @@ export async function POST(req: Request): Promise<Response> {
 
   // Idempotency: same key returns the same prior run, no recomputation.
   if (request.idempotencyKey) {
-    const existing = runStore.runIdForIdempotencyKey(request.idempotencyKey);
+    const existing = await runStore.runIdForIdempotencyKey(
+      request.idempotencyKey,
+    );
     if (existing) {
-      const stored = runStore.get(existing);
+      const stored = await runStore.get(existing);
       if (stored) return NextResponse.json(toResponse(stored, req), { status: 200 });
     }
   }
@@ -69,10 +71,10 @@ export async function POST(req: Request): Promise<Response> {
       runId,
     });
 
-    runStore.put({ runId, report, verification });
+    await runStore.put({ runId, report, verification });
     traceStore.put(trace.snapshot());
     if (request.idempotencyKey) {
-      runStore.mapIdempotencyKey(request.idempotencyKey, runId);
+      await runStore.mapIdempotencyKey(request.idempotencyKey, runId);
     }
 
     logger.info({ stage: "deliver" }, "pipeline complete");

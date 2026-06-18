@@ -27,7 +27,7 @@ export default async function HandoverPage({
   params: Promise<{ runId: string }>;
 }) {
   const { runId } = await params;
-  const stored = runStore.get(runId);
+  const stored = await runStore.get(runId);
   if (!stored) notFound();
 
   const { report, verification } = stored;

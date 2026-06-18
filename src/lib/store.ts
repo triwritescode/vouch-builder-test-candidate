@@ -1,3 +1,4 @@
+import { kv } from "@vercel/kv";
 import type { HandoverReport, VerificationResult } from "../types";
 
 export interface StoredRun {
@@ -6,38 +7,63 @@ export interface StoredRun {
   verification: VerificationResult;
 }
 
-// Swappable run store. This slice uses an in-memory Map (does not survive cold
-// starts / multiple instances — acceptable per §17). Production swaps this for
-// Postgres/Redis behind the same interface; nothing else changes.
+// Swappable run store behind one async interface. Production (Vercel) uses
+// Vercel KV so a run written by the POST instance is readable by the GET/page
+// instance — serverless invocations do not share process memory. Without KV
+// creds (local dev / tests) it falls back to an in-memory Map.
 export interface RunStore {
   readonly persistent: boolean;
-  put(run: StoredRun): void;
-  get(runId: string): StoredRun | undefined;
-  runIdForIdempotencyKey(key: string): string | undefined;
-  mapIdempotencyKey(key: string, runId: string): void;
+  put(run: StoredRun): Promise<void>;
+  get(runId: string): Promise<StoredRun | undefined>;
+  runIdForIdempotencyKey(key: string): Promise<string | undefined>;
+  mapIdempotencyKey(key: string, runId: string): Promise<void>;
 }
 
+// In-memory fallback. Does NOT survive cold starts / multiple instances — only
+// safe for a single local process. Pinned to globalThis so all route bundles in
+// one process share it (also survives dev HMR).
 class InMemoryRunStore implements RunStore {
   readonly persistent = false;
   private runs = new Map<string, StoredRun>();
   private idempotency = new Map<string, string>();
 
-  put(run: StoredRun): void {
+  async put(run: StoredRun): Promise<void> {
     this.runs.set(run.runId, run);
   }
-  get(runId: string): StoredRun | undefined {
+  async get(runId: string): Promise<StoredRun | undefined> {
     return this.runs.get(runId);
   }
-  runIdForIdempotencyKey(key: string): string | undefined {
+  async runIdForIdempotencyKey(key: string): Promise<string | undefined> {
     return this.idempotency.get(key);
   }
-  mapIdempotencyKey(key: string, runId: string): void {
+  async mapIdempotencyKey(key: string, runId: string): Promise<void> {
     this.idempotency.set(key, runId);
   }
 }
 
-// Next bundles each route segment separately, so a plain module-level singleton
-// would give POST, GET, and the page their OWN empty Map. Pin it to globalThis
-// so every bundle in the process shares one store (also survives dev HMR).
+// Vercel KV (Upstash Redis under the hood). Shared across all serverless
+// instances, so the page render can read what the POST wrote.
+class KvRunStore implements RunStore {
+  readonly persistent = true;
+
+  async put(run: StoredRun): Promise<void> {
+    await kv.set(`run:${run.runId}`, run);
+  }
+  async get(runId: string): Promise<StoredRun | undefined> {
+    return (await kv.get<StoredRun>(`run:${runId}`)) ?? undefined;
+  }
+  async runIdForIdempotencyKey(key: string): Promise<string | undefined> {
+    return (await kv.get<string>(`idem:${key}`)) ?? undefined;
+  }
+  async mapIdempotencyKey(key: string, runId: string): Promise<void> {
+    await kv.set(`idem:${key}`, runId);
+  }
+}
+
+const hasKv = Boolean(
+  process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN,
+);
 const g = globalThis as typeof globalThis & { __vouchRunStore?: RunStore };
-export const runStore: RunStore = (g.__vouchRunStore ??= new InMemoryRunStore());
+export const runStore: RunStore = hasKv
+  ? new KvRunStore()
+  : (g.__vouchRunStore ??= new InMemoryRunStore());
