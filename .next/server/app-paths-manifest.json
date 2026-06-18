@@ -1,5 +1,3 @@
 {
-  "/_not-found/page": "app/_not-found/page.js",
-  "/api/handover/route": "app/api/handover/route.js",
   "/handover/[runId]/page": "app/handover/[runId]/page.js"
 }
