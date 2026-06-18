@@ -185,6 +185,6 @@ export interface HandoverReport {
 export interface HandoverResponse {
   runId: string;
   report: HandoverReport;
-  viewUrl: string;
+  viewUrl: string | null;
   verification: VerificationResult;
 }

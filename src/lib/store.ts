@@ -10,6 +10,7 @@ export interface StoredRun {
 // starts / multiple instances — acceptable per §17). Production swaps this for
 // Postgres/Redis behind the same interface; nothing else changes.
 export interface RunStore {
+  readonly persistent: boolean;
   put(run: StoredRun): void;
   get(runId: string): StoredRun | undefined;
   runIdForIdempotencyKey(key: string): string | undefined;
@@ -17,6 +18,7 @@ export interface RunStore {
 }
 
 class InMemoryRunStore implements RunStore {
+  readonly persistent = false;
   private runs = new Map<string, StoredRun>();
   private idempotency = new Map<string, string>();
 
