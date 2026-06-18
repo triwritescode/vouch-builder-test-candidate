@@ -102,7 +102,7 @@ function toResponse(
   return {
     runId: stored.runId,
     report: stored.report,
-    viewUrl: `${origin}/handover/${stored.runId}`,
+    viewUrl: runStore.persistent ? `${origin}/handover/${stored.runId}` : null,
     verification: stored.verification,
   };
 }
