@@ -14,6 +14,7 @@ export interface StoredRun {
 // Postgres (Neon) so any process can read what another wrote. Without DATABASE_URL
 // (local dev / tests) it falls back to an in-memory Map.
 export interface RunStore {
+  readonly persistent: boolean;
   put(run: StoredRun): Promise<void>;
   get(runId: string): Promise<StoredRun | undefined>;
   runIdForIdempotencyKey(key: string): Promise<string | undefined>;
@@ -46,6 +47,7 @@ class InMemoryRunStore implements RunStore {
 // instances, so the page render can read what the POST wrote. Schema is created
 // lazily once per process; CREATE TABLE IF NOT EXISTS is idempotent.
 class PgRunStore implements RunStore {
+  readonly persistent = true;
   private sql: ReturnType<typeof neon>;
   private ready?: Promise<void>;
 
